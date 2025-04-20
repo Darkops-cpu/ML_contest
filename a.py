@@ -3,65 +3,68 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import LabelEncoder
-from lightgbm import LGBMRegressor
-from math import sqrt
+import lightgbm as lgb
 
 # Load data
 train = pd.read_csv("train.csv")
 test = pd.read_csv("test.csv")
-sample_submission = pd.read_csv("sample_submission.csv")
 
-# Drop ID columns
+# Backup test IDs
 test_ids = test["id"]
+
+# Drop ID
 train.drop("id", axis=1, inplace=True)
 test.drop("id", axis=1, inplace=True)
 
 # Fill missing values
-train = train.ffill()
-test = test.ffill()
+train.ffill(inplace=True)
+test.ffill(inplace=True)
 
-# Add car age feature
-train["car_age"] = 2025 - train["model_year"]
+# Feature engineering
+train["car_age"] = 2025 - train["model year"]
 test["car_age"] = 2025 - test["model_year"]
+
+# Align column names
+train.rename(columns={"model year": "model_year"}, inplace=True)
+
+# Drop original year column
 train.drop("model_year", axis=1, inplace=True)
 test.drop("model_year", axis=1, inplace=True)
 
-# Drop noisy or highly redundant columns
-drop_cols = ["engine_displacement", "engine_desc", "drivetrain", "doors"]
-train.drop(columns=[col for col in drop_cols if col in train.columns], inplace=True)
-test.drop(columns=[col for col in drop_cols if col in test.columns], inplace=True)
+# Categorical encoding
+cat_cols = train.select_dtypes(include=["object"]).columns.tolist()
+cat_cols.remove("price") if "price" in cat_cols else None
 
-# Encode categorical variables
-cat_cols = train.select_dtypes(include="object").columns.tolist()
 for col in cat_cols:
-    combined_vals = pd.concat([train[col], test[col]], axis=0).astype(str)
-    encoder = LabelEncoder()
-    encoder.fit(combined_vals)
-    train[col] = encoder.transform(train[col].astype(str))
-    test[col] = encoder.transform(test[col].astype(str))
+    le = LabelEncoder()
+    combined = pd.concat([train[col], test[col]], axis=0).astype(str)
+    le.fit(combined)
+    train[col] = le.transform(train[col].astype(str))
+    test[col] = le.transform(test[col].astype(str))
 
-# Define features and target
+# Split features/target
 X = train.drop("price", axis=1)
 y = train["price"]
 
-# Train-validation split
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Model - Using LightGBM Regressor
-model = LGBMRegressor(
+# Train LightGBM model
+model = lgb.LGBMRegressor(
     n_estimators=1000,
     learning_rate=0.05,
-    max_depth=14,
+    max_depth=10,
     num_leaves=31,
-    min_data_in_leaf=20,
-    random_state=42,
-    n_jobs=-1
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42
 )
-model.fit(X_train, y_train, eval_set=[(X_val, y_val)], early_stopping_rounds=50, verbose=100)
 
-# Evaluate
+model.fit(X_train, y_train)
+
+# Predict and evaluate
 val_preds = model.predict(X_val)
-print("Validation RMSE:", sqrt(mean_squared_error(y_val, val_preds)))
+rmse = mean_squared_error(y_val, val_preds, squared=False)
+print(f"Validation RMSE: {rmse:.2f}")
 
 # Predict on test set
 test_preds = model.predict(test)
@@ -72,3 +75,4 @@ submission = pd.DataFrame({
     "price": test_preds.astype(int)
 })
 submission.to_csv("submission.csv", index=False)
+
